@@ -1,12 +1,17 @@
 #include <Tlv493d.h>
 #include <SimpleKalmanFilter.h>
+// Include inbuilt Arduino HID library by NicoHood: https://github.com/NicoHood/HID 
+#include "HID.h"
+
+// Debug level
+int debug = 2;
 
 // Tlv493d Opject
 Tlv493d mag = Tlv493d();
 
 //Kalman filter
 float v1 = 300;
-float v2 = 0.3;
+float v2 = 0.2;
 SimpleKalmanFilter xFilter(v1, v1, v2), yFilter(v1, v1, v2), zFilter(v1, v1, v2);
 
 float Tx = 0, Ty = 0, Tz = 0, Rx = 0, Ry = 0, Rz = 0;
@@ -22,11 +27,7 @@ int magTreshold = 60;
 // Ready gyroscope to get rotations
 // Convert and send
 
-// Include inbuilt Arduino HID library by NicoHood: https://github.com/NicoHood/HID 
-#include "HID.h"
 
-// Debug level
-int debug = 3;
 
 // This portion sets up the communication with the 3DConnexion software. The communication protocol is created here.
 // hidReportDescriptor webpage can be found here: https://eleccelerator.com/tutorial-about-usb-hid-report-descriptors/ 
@@ -127,6 +128,9 @@ void setup() {
   zOffset = zOffset / calSamples;
 }
 
+float xPerc = 0, yPerc = 0, zPerc = 0;
+int numberOfSamples = 0, xOver = 0, yOver = 0, zOver = 0;
+
 void loop() {
   mag.updateData();
   // delay(50);
@@ -170,6 +174,27 @@ void loop() {
     Serial.print(" uT; Tz = ");
     Serial.print(Tz);
     Serial.println(" uT");
+  }
+
+  if (debug == 4) {
+    numberOfSamples++;
+    if (numberOfSamples < 100) return;
+    if (Tx != 0) {
+      xOver++;
+    }
+    if (Ty != 0) {
+      yOver++;
+    }
+    if (Tz != 0) {
+      zOver++;
+    }
+    Serial.print("xOver = ");
+    Serial.print(((float)xOver / (float)numberOfSamples) * 100);
+    Serial.print(" %; yOver = ");
+    Serial.print(((float)yOver / (float)numberOfSamples) * 100);
+    Serial.print(" %; zOver = ");
+    Serial.print(((float)zOver / (float)numberOfSamples) * 100);
+    Serial.println(" %");
   }
    
   delay(50);
