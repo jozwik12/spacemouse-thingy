@@ -1,202 +1,102 @@
-#include <Tlv493d.h>
-#include <SimpleKalmanFilter.h>
-// Include inbuilt Arduino HID library by NicoHood: https://github.com/NicoHood/HID 
-#include "HID.h"
+#include <Adafruit_ICM20X.h>
+#include <Adafruit_ICM20948.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
 
-// Debug level
-int debug = 2;
+Adafruit_ICM20948 icm;
+uint16_t measurement_delay_us = 65535; // Delay between measurements for testing
 
-// Tlv493d Opject
-Tlv493d mag = Tlv493d();
+void setup(void) {
+  // Turn on serial for debugging
+  Serial.begin(115200);
+  while (!Serial)
+    delay(10); // will pause Zero, Leonardo, etc until serial console opens
 
-//Kalman filter
-float v1 = 300;
-float v2 = 0.2;
-SimpleKalmanFilter xFilter(v1, v1, v2), yFilter(v1, v1, v2), zFilter(v1, v1, v2);
-
-float Tx = 0, Ty = 0, Tz = 0, Rx = 0, Ry = 0, Rz = 0;
-int calSamples = 300;
-// Magnetometer reading oscilates around 50 uT around center point
-// kinda like deadzone
-// possibly can be lowered by improving filtering or startup loop
-int magTreshold = 60;
-
-// Basic flow:
-// While setup take a certain amount of samples to get default position
-// Read magnetometer to get translations
-// Ready gyroscope to get rotations
-// Convert and send
-
-
-
-// This portion sets up the communication with the 3DConnexion software. The communication protocol is created here.
-// hidReportDescriptor webpage can be found here: https://eleccelerator.com/tutorial-about-usb-hid-report-descriptors/ 
-static const uint8_t _hidReportDescriptor[] PROGMEM = {
-  0x05, 0x01,           //  Usage Page (Generic Desktop)
-  0x09, 0x08,           //  0x08: Usage (Multi-Axis)
-  0xa1, 0x01,           //  Collection (Application)
-  0xa1, 0x00,           // Collection (Physical)
-  0x85, 0x01,           //  Report ID
-  0x16, 0x00, 0x80,     //logical minimum (-500)
-  0x26, 0xff, 0x7f,     //logical maximum (500)
-  0x36, 0x00, 0x80,     //Physical Minimum (-32768)
-  0x46, 0xff, 0x7f,     //Physical Maximum (32767)
-  0x09, 0x30,           //    Usage (X)
-  0x09, 0x31,           //    Usage (Y)
-  0x09, 0x32,           //    Usage (Z)
-  0x75, 0x10,           //    Report Size (16)
-  0x95, 0x03,           //    Report Count (3)
-  0x81, 0x02,           //    Input (variable,absolute)
-  0xC0,                 //  End Collection
-  0xa1, 0x00,           // Collection (Physical)
-  0x85, 0x02,           //  Report ID
-  0x16, 0x00, 0x80,     //logical minimum (-500)
-  0x26, 0xff, 0x7f,     //logical maximum (500)
-  0x36, 0x00, 0x80,     //Physical Minimum (-32768)
-  0x46, 0xff, 0x7f,     //Physical Maximum (32767)
-  0x09, 0x33,           //    Usage (RX)
-  0x09, 0x34,           //    Usage (RY)
-  0x09, 0x35,           //    Usage (RZ)
-  0x75, 0x10,           //    Report Size (16)
-  0x95, 0x03,           //    Report Count (3)
-  0x81, 0x02,           //    Input (variable,absolute)
-  0xC0,                 //  End Collection
- 
-  0xa1, 0x00,           // Collection (Physical)
-  0x85, 0x03,           //  Report ID
-  0x15, 0x00,           //   Logical Minimum (0)
-  0x25, 0x01,           //    Logical Maximum (1)
-  0x75, 0x01,           //    Report Size (1)
-  0x95, 32,             //    Report Count (24)
-  0x05, 0x09,           //    Usage Page (Button)
-  0x19, 1,              //    Usage Minimum (Button #1)
-  0x29, 32,             //    Usage Maximum (Button #24)
-  0x81, 0x02,           //    Input (variable,absolute)
-  0xC0,
-  0xC0
-};
-
-//initial centerpoints of magnetometer readout
-float centerpointsMag[3];
-float centerpointsGyro[3];
-
-void readMagnetometer (float *data){
-  data[0] = mag.getX();
-  data[1] = mag.getY();
-  data[2] = mag.getZ();
-}
-
-// Function to send translation and rotation data to the 3DConnexion software using the HID protocol outlined earlier. Two sets of data are sent: translation and then rotation.
-// For each, a 16bit integer is split into two using bit shifting. The first is mangitude and the second is direction.
-void send_command(int16_t rx, int16_t ry, int16_t rz, int16_t x, int16_t y, int16_t z) {
-  uint8_t trans[6] = { x & 0xFF, x >> 8, y & 0xFF, y >> 8, z & 0xFF, z >> 8 };
-  HID().SendReport(1, trans, 6);
-  uint8_t rot[6] = { rx & 0xFF, rx >> 8, ry & 0xFF, ry >> 8, rz & 0xFF, rz >> 8 };
-  HID().SendReport(2, rot, 6);
-}
-
-float xOffset = 0, yOffset = 0, zOffset = 0;
-
-void setup() {
-  // HID protocol is set.
-  static HIDSubDescriptor node(_hidReportDescriptor, sizeof(_hidReportDescriptor));
-  HID().AppendDescriptor(&node);
-  // Begin Seral for debugging
-  Serial.begin(250000);
-  delay(100);
-  
-  while(!Serial);
-  mag.begin();
-
-  Serial.print("Initializing");
-  // crude offset calibration on first boot
-  for (int i = 1; i <= calSamples; i++)
-  {
-
-    // delay(mag.getMeasurementDelay());
-    mag.updateData();
-
-    xOffset += mag.getX();
-    yOffset += mag.getY();
-    zOffset += mag.getZ();
-
-    Serial.print(".");
+  // Initialize
+  Serial.println("Initializing");
+  if (!icm.begin_I2C()) {
+    while (1) {
+      delay(10);
+    }
   }
 
-  xOffset = xOffset / calSamples;
-  yOffset = yOffset / calSamples;
-  zOffset = zOffset / calSamples;
+  icm.setAccelRange(ICM20948_ACCEL_RANGE_2_G);
+  icm.setGyroRange(ICM20948_GYRO_RANGE_250_DPS);
+  icm.setMagDataRate(AK09916_MAG_DATARATE_100_HZ);
 }
 
-float xPerc = 0, yPerc = 0, zPerc = 0;
-int numberOfSamples = 0, xOver = 0, yOver = 0, zOver = 0;
+float angleX = 0, angleY = 0, angleZ = 0;
+float prevAngleX = 0, prevAngleY = 0, prevAngleZ = 0;
+float gyroThreshold = 0.02;
+
+float degreeConv = 57.3;
+unsigned long lastUpdateTime = 0; // to store the last time variables were updated
+const unsigned long timeout = 5000; // 5 seconds timeout
+
+float alpha = 0.95; // Adjust alpha based on your system dynamics
 
 void loop() {
-  mag.updateData();
-  // delay(50);
 
-  //print absolute mag readouts in uT
-  if (debug == 1) {
-    Serial.print("X = ");
-    Serial.print(mag.getX() * 1000);
-    Serial.print(" uT; Y = ");
-    Serial.print(mag.getY() * 1000);
-    Serial.print(" uT; Z = ");
-    Serial.print(mag.getZ() * 1000);
-    Serial.println(" uT");
+  //  /* Get a new normalized sensor event */
+  sensors_event_t accel;
+  sensors_event_t gyro;
+  sensors_event_t mag;
+  sensors_event_t temp;
+  icm.getEvent(&accel, &gyro, &temp, &mag);
+
+  // if (angleX != prevAngleX || angleY != prevAngleY || angleZ != prevAngleZ) {
+  //   lastUpdateTime = millis(); // Update the time when variables change
+  //   prevAngleX = angleX; // Update previous values
+  //   prevAngleY = angleY;
+  //   prevAngleZ = angleZ;
+  // }
+
+  // // Check if 5 seconds have passed since the last change
+  // if (millis() - lastUpdateTime > timeout) {
+  //   angleX = 0;
+  //   angleY = 0;
+  //   angleZ = 0;
+  //   prevAngleX = 0; // Reset previous values
+  //   prevAngleY = 0;
+  //   prevAngleZ = 0;
+  //   lastUpdateTime = millis(); // Reset the timer to avoid multiple resets
+  // }
+
+  if(abs(gyro.gyro.x) > gyroThreshold) {
+    angleX += gyro.gyro.x * measurement_delay_us * degreeConv / 1000000;
+  }
+  if(abs(gyro.gyro.y) > gyroThreshold) {
+    angleY += gyro.gyro.y * measurement_delay_us * degreeConv / 1000000;
+  }
+  if(abs(gyro.gyro.z) > gyroThreshold) {
+    angleZ += gyro.gyro.z * measurement_delay_us * degreeConv / 1000000;
   }
 
-  Tx = xFilter.updateEstimate((mag.getX() - xOffset) * 1000);
-  Ty = yFilter.updateEstimate((mag.getY() - yOffset) * 1000);
-  Tz = zFilter.updateEstimate((mag.getZ() - zOffset) * 1000);
+  // Serial.print("\tMag X: ");
+  // Serial.print(mag.magnetic.x);
+  // Serial.print(" \tY: ");
+  // Serial.print(mag.magnetic.y);
+  // Serial.print(" \tZ: ");
+  // Serial.print(mag.magnetic.z);
+  // Serial.print(" uT");
 
-  //print mag readout relative to starting positions in uT
-  if (debug == 2) {
-    Serial.print("Tx = ");
-    Serial.print(Tx);
-    Serial.print(" uT; Ty = ");
-    Serial.print(Ty);
-    Serial.print(" uT; Tz = ");
-    Serial.print(Tz);
-    Serial.println(" uT");
-  }
+  // Serial.print("\tGyro X: ");
+  // Serial.print(gyro.gyro.x);
+  // Serial.print(" \tY: ");
+  // Serial.print(gyro.gyro.y);
+  // Serial.print(" \tZ: ");
+  // Serial.print(gyro.gyro.z);
+  // Serial.print(" rad/s ");
 
-  Tx = (abs(Tx) - magTreshold > 0) ? Tx : 0;
-  Ty = (abs(Ty) - magTreshold > 0) ? Ty : 0;
-  Tz = (abs(Tz) - magTreshold > 0) ? Tz : 0;
+  Serial.print("\t\tAng X: ");
+  Serial.print(angleX);
+  Serial.print(" \tY: ");
+  Serial.print(angleY);
+  Serial.print(" \tZ: ");
+  Serial.print(angleZ);
+  Serial.print(" deg ");
 
-  //print mag readout relative to starting positions in uT accounting for the deadzone
-  if (debug == 3) {
-    Serial.print("Tx = ");
-    Serial.print(Tx);
-    Serial.print(" uT; Ty = ");
-    Serial.print(Ty);
-    Serial.print(" uT; Tz = ");
-    Serial.print(Tz);
-    Serial.println(" uT");
-  }
-
-  if (debug == 4) {
-    numberOfSamples++;
-    if (numberOfSamples < 100) return;
-    if (Tx != 0) {
-      xOver++;
-    }
-    if (Ty != 0) {
-      yOver++;
-    }
-    if (Tz != 0) {
-      zOver++;
-    }
-    Serial.print("xOver = ");
-    Serial.print(((float)xOver / (float)numberOfSamples) * 100);
-    Serial.print(" %; yOver = ");
-    Serial.print(((float)yOver / (float)numberOfSamples) * 100);
-    Serial.print(" %; zOver = ");
-    Serial.print(((float)zOver / (float)numberOfSamples) * 100);
-    Serial.println(" %");
-  }
-   
-  delay(50);
+  Serial.println();
+  
+  delayMicroseconds(measurement_delay_us);
 }
-
